@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+    "tfhe",
+    "tfhe-fft",
+    "tfhe-ntt",
+    "tfhe-zk-pok",
+    "tasks",
+    "apps/trivium",
+    "tfhe-csprng",
+    "backends/tfhe-cuda-backend",
+    "utils/tfhe-versionable",
+    "utils/tfhe-versionable-derive",
+    "tests",
+]
+
+exclude = ["tests/backward_compatibility_tests", "utils/tfhe-lints"]
+[workspace.dependencies]
+aligned-vec = { version = "0.6", default-features = false }
+bytemuck = "1.14.3"
+dyn-stack = { version = "0.11", default-features = false }
+itertools = "0.14"
+num-complex = "0.4"
+pulp = { version = "0.20", default-features = false }
+rand = "0.8"
+rayon = "1"
+serde = { version = "1.0", default-features = false }
+wasm-bindgen = "0.2.100"
+
+[profile.bench]
+lto = "fat"
+
+[profile.release]
+lto = "fat"
+
+[profile.release_lto_off]
+inherits = "release"
+lto = "off"
+
+# Compiles much faster for tests and allows reasonable performance for iterating
+[profile.devo]
+inherits = "dev"
+opt-level = 3
+lto = "off"
+debug-assertions = false
+
+[workspace.metadata.dylint]
+libraries = [{ path = "utils/tfhe-lints" }]

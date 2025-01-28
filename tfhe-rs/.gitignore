@@ -1,0 +1,36 @@
+target/
+.idea/
+.vscode/
+
+# Path we use for internal-keycache during tests
+/keys/
+# In case of symlinked keys
+/keys
+
+**/*.rmeta
+**/Cargo.lock
+**/*.bin
+
+# Some of our bench outputs
+/tfhe/benchmarks_parameters
+/tfhe-zk-pok/benchmarks_parameters
+**/*.csv
+
+# dieharder run log
+dieharder_run.log
+
+# Coverage reports
+/coverage/
+
+# Cuda local build
+backends/tfhe-cuda-backend/cuda/cmake-build-debug/
+
+# WASM tests
+tfhe/web_wasm_parallel_tests/server.PID
+venv/
+web-test-runner/
+node_modules/
+package-lock.json
+
+# Dir used for backward compatibility test data
+tests/tfhe-backward-compat-data/

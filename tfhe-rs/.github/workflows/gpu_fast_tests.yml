@@ -1,0 +1,204 @@
+# Compile and test tfhe-cuda-backend on an AWS instance
+name: TFHE Cuda Backend - Fast tests
+
+env:
+  CARGO_TERM_COLOR: always
+  ACTION_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  RUSTFLAGS: "-C target-cpu=native"
+  RUST_BACKTRACE: "full"
+  RUST_MIN_STACK: "8388608"
+  SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+  SLACK_ICON: https://pbs.twimg.com/profile_images/1274014582265298945/OjBKP9kn_400x400.png
+  SLACK_USERNAME: ${{ secrets.BOT_USERNAME }}
+  SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+  MSG_MINIMAL: event,action url,commit
+  BRANCH: ${{ github.head_ref || github.ref }}
+  IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
+  REF: ${{ github.event.pull_request.head.sha || github.sha }}
+
+on:
+  # Allows you to run this workflow manually from the Actions tab as an alternative.
+  workflow_dispatch:
+  # Trigger pull_request event on CI files to be able to test changes before merging to main branch.
+  # Workflow would fail if changes come from a forked repository since secrets are not available with this event.
+  pull_request:
+    paths:
+      - '.github/**'
+      - 'ci/**'
+  # General entry point for Zama's pull request as well as contribution from forks.
+  pull_request_target:
+    paths:
+      - '**'
+      - '!.github/**'
+      - '!ci/**'
+
+jobs:
+  should-run:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      gpu_test: ${{ env.IS_PULL_REQUEST == 'false' || steps.changed-files.outputs.gpu_any_changed }}
+    steps:
+      - name: Checkout tfhe-rs
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: 'false'
+          token: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+          ref: ${{ env.REF }}
+
+      - name: Check for file changes
+        id: changed-files
+        uses: tj-actions/changed-files@d6e91a2266cdb9d62096cebf1e8546899c6aa18f
+        with:
+          since_last_remote_commit: true
+          files_yaml: |
+            gpu:
+              - tfhe/Cargo.toml
+              - tfhe/build.rs
+              - backends/tfhe-cuda-backend/**
+              - tfhe/src/core_crypto/gpu/**
+              - tfhe/src/integer/server_key/radix_parallel/tests_unsigned/**
+              - tfhe/src/integer/server_key/radix_parallel/tests_signed/**
+              - tfhe/src/integer/server_key/radix_parallel/tests_cases_unsigned.rs
+              - tfhe/src/integer/gpu/**
+              - tfhe/src/shortint/parameters/**
+              - tfhe/src/high_level_api/**
+              - tfhe/src/c_api/**
+              - 'tfhe/docs/**/**.md'
+              - '.github/workflows/gpu_fast_tests.yml'
+              - scripts/integer-tests.sh
+              - ci/slab.toml
+
+  check-ci-files:
+    uses: ./.github/workflows/check_ci_files_change.yml
+    with:
+      checkout_ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    secrets:
+      REPO_CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+
+  # Fail if the triggering actor is not part of Zama organization.
+  # If pull_request_target is emitted and CI files have changed, skip this job. This would skip following jobs.
+  check-user-permission:
+    needs: check-ci-files
+    if: github.event_name != 'pull_request_target' ||
+      (github.event_name == 'pull_request_target' && needs.check-ci-files.outputs.ci_file_changed == 'false')
+    uses: ./.github/workflows/check_actor_permissions.yml
+    secrets:
+      TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  setup-instance:
+    name: Setup instance (cuda-tests)
+    needs: [ should-run, check-user-permission ]
+    if: github.event_name == 'workflow_dispatch' ||
+      needs.should-run.outputs.gpu_test == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      runner-name: ${{ steps.start-instance.outputs.label }}
+    steps:
+      - name: Start instance
+        id: start-instance
+        uses: zama-ai/slab-github-runner@79939325c3c429837c10d6041e4fd8589d328bac
+        with:
+          mode: start
+          github-token: ${{ secrets.SLAB_ACTION_TOKEN }}
+          slab-url: ${{ secrets.SLAB_BASE_URL }}
+          job-secret: ${{ secrets.JOB_SECRET }}
+          backend: hyperstack
+          profile: gpu-test
+
+  cuda-tests-linux:
+    name: CUDA tests
+    needs: [ should-run, setup-instance ]
+    if: github.event_name != 'pull_request_target' ||
+      (github.event_name == 'pull_request_target' && needs.setup-instance.result != 'skipped')
+    concurrency:
+      group: ${{ github.workflow }}_${{ github.head_ref || github.ref }}
+      cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+    runs-on: ${{ needs.setup-instance.outputs.runner-name }}
+    strategy:
+      fail-fast: false
+      # explicit include-based build matrix, of known valid options
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            cuda: "12.2"
+            gcc: 11 
+    steps:
+      - name: Checkout tfhe-rs
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: 'false'
+          token: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+          ref: ${{ env.REF }}
+
+      - name: Setup Hyperstack dependencies
+        uses: ./.github/actions/hyperstack_setup
+        with:
+          cuda-version: ${{ matrix.cuda }}
+          gcc-version: ${{ matrix.gcc }}
+
+      - name: Set up home
+        run: |
+          echo "HOME=/home/ubuntu" >> "${GITHUB_ENV}"
+
+      - name: Install latest stable
+        uses: dtolnay/rust-toolchain@a54c7afa936fefeb4456b2dd8068152669aa8203
+        with:
+          toolchain: stable
+
+      - name: Run core crypto and internal CUDA backend tests
+        run: |
+          make test_core_crypto_gpu
+          make test_integer_compression_gpu
+          make test_cuda_backend
+
+      - name: Run user docs tests
+        run: |
+          make test_user_doc_gpu
+
+      - name: Test C API
+        run: |
+          make test_c_api_gpu
+
+      - name: Run High Level API Tests
+        run: |
+          make test_high_level_api_gpu
+
+  slack-notify:
+    name: Slack Notification
+    needs: [ setup-instance, cuda-tests-linux ]
+    runs-on: ubuntu-latest
+    if: ${{ always() && needs.cuda-tests-linux.result != 'skipped' && failure() }}
+    continue-on-error: true
+    steps:
+      - name: Send message
+        uses: rtCamp/action-slack-notify@c33737706dea87cd7784c687dadc9adf1be59990
+        env:
+          SLACK_COLOR: ${{ needs.cuda-tests-linux.result }}
+          SLACK_MESSAGE: "Base GPU tests finished with status: ${{ needs.cuda-tests-linux.result }} on '${{ env.BRANCH }}'. (${{ env.ACTION_RUN_URL }})"
+
+  teardown-instance:
+    name: Teardown instance (cuda-tests)
+    if: ${{ always() && needs.setup-instance.result == 'success' }}
+    needs: [ setup-instance, cuda-tests-linux ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop instance
+        id: stop-instance
+        uses: zama-ai/slab-github-runner@79939325c3c429837c10d6041e4fd8589d328bac
+        with:
+          mode: stop
+          github-token: ${{ secrets.SLAB_ACTION_TOKEN }}
+          slab-url: ${{ secrets.SLAB_BASE_URL }}
+          job-secret: ${{ secrets.JOB_SECRET }}
+          label: ${{ needs.setup-instance.outputs.runner-name }}
+
+      - name: Slack Notification
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: rtCamp/action-slack-notify@c33737706dea87cd7784c687dadc9adf1be59990
+        env:
+          SLACK_COLOR: ${{ job.status }}
+          SLACK_MESSAGE: "Instance teardown (cuda-tests) finished with status: ${{ job.status }} on '${{ env.BRANCH }}'. (${{ env.ACTION_RUN_URL }})"

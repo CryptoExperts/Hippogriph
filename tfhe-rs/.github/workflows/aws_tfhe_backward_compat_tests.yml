@@ -1,0 +1,150 @@
+# Run backward compatibility tests
+name: Backward compatibility Tests on CPU
+
+env:
+  CARGO_TERM_COLOR: always
+  ACTION_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  RUSTFLAGS: "-C target-cpu=native"
+  RUST_BACKTRACE: "full"
+  RUST_MIN_STACK: "8388608"
+  SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+  SLACK_ICON: https://pbs.twimg.com/profile_images/1274014582265298945/OjBKP9kn_400x400.png
+  SLACK_USERNAME: ${{ secrets.BOT_USERNAME }}
+  SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+  MSG_MINIMAL: event,action url,commit
+  BRANCH: ${{ github.head_ref || github.ref }}
+  REF: ${{ github.event.pull_request.head.sha || github.sha }}
+
+on:
+  # Allows you to run this workflow manually from the Actions tab as an alternative.
+  workflow_dispatch:
+  # Trigger pull_request event on CI files to be able to test changes before merging to main branch.
+  # Workflow would fail if changes come from a forked repository since secrets are not available with this event.
+  pull_request:
+    paths:
+      - '.github/**'
+      - 'ci/**'
+  # General entry point for Zama's pull request as well as contribution from forks.
+  pull_request_target:
+    paths:
+      - '**'
+      - '!.github/**'
+      - '!ci/**'
+
+jobs:
+  check-ci-files:
+    uses: ./.github/workflows/check_ci_files_change.yml
+    with:
+      checkout_ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    secrets:
+      REPO_CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+
+  # Fail if the triggering actor is not part of Zama organization.
+  # If pull_request_target is emitted and CI files have changed, skip this job. This would skip following jobs.
+  check-user-permission:
+    needs: check-ci-files
+    if: github.event_name != 'pull_request_target' ||
+      (github.event_name == 'pull_request_target' && needs.check-ci-files.outputs.ci_file_changed == 'false')
+    uses: ./.github/workflows/check_actor_permissions.yml
+    secrets:
+      TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  setup-instance:
+    name: Setup instance (backward-compat-tests)
+    needs: check-user-permission
+    runs-on: ubuntu-latest
+    outputs:
+      runner-name: ${{ steps.start-instance.outputs.label }}
+    steps:
+      - name: Start instance
+        id: start-instance
+        uses: zama-ai/slab-github-runner@79939325c3c429837c10d6041e4fd8589d328bac
+        with:
+          mode: start
+          github-token: ${{ secrets.SLAB_ACTION_TOKEN }}
+          slab-url: ${{ secrets.SLAB_BASE_URL }}
+          job-secret: ${{ secrets.JOB_SECRET }}
+          backend: aws
+          profile: cpu-small
+
+  backward-compat-tests:
+    name: Backward compatibility tests
+    needs: [ setup-instance ]
+    concurrency:
+      group: ${{ github.workflow }}_${{ github.head_ref || github.ref }}
+      cancel-in-progress: true
+    runs-on: ${{ needs.setup-instance.outputs.runner-name }}
+    steps:
+      - name: Checkout tfhe-rs
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: 'false'
+          token: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+          ref: ${{ env.REF }}
+
+      - name: Install latest stable
+        uses: dtolnay/rust-toolchain@a54c7afa936fefeb4456b2dd8068152669aa8203
+        with:
+          toolchain: stable
+
+      - name: Install git-lfs
+        run: |
+          sudo apt update && sudo apt -y install git-lfs
+
+      - name: Use specific data branch
+        if: ${{ contains(github.event.pull_request.labels.*.name, 'data_PR') }}
+        env:
+          PR_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          echo "BACKWARD_COMPAT_DATA_BRANCH=${PR_BRANCH}" >> "${GITHUB_ENV}"
+
+      - name: Get backward compat branch
+        id: backward_compat_branch
+        run: |
+          BRANCH="$(make backward_compat_branch)"
+          echo "branch=${BRANCH}" >> "${GITHUB_OUTPUT}"
+
+      - name: Clone test data
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: 'false'
+          repository: zama-ai/tfhe-backward-compat-data
+          path: tests/tfhe-backward-compat-data
+          lfs: 'true'
+          ref: ${{ steps.backward_compat_branch.outputs.branch }}
+
+      - name: Run backward compatibility tests
+        run: |
+          make test_backward_compatibility_ci
+
+      - name: Slack Notification
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: rtCamp/action-slack-notify@c33737706dea87cd7784c687dadc9adf1be59990
+        env:
+          SLACK_COLOR: ${{ job.status }}
+          SLACK_MESSAGE: "Backward compatibility tests finished with status: ${{ job.status }} on '${{ env.BRANCH }}'. (${{ env.ACTION_RUN_URL }})"
+
+  teardown-instance:
+    name: Teardown instance (backward-compat-tests)
+    if: ${{ always() && needs.setup-instance.result == 'success' }}
+    needs: [ setup-instance, backward-compat-tests ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop instance
+        id: stop-instance
+        uses: zama-ai/slab-github-runner@79939325c3c429837c10d6041e4fd8589d328bac
+        with:
+          mode: stop
+          github-token: ${{ secrets.SLAB_ACTION_TOKEN }}
+          slab-url: ${{ secrets.SLAB_BASE_URL }}
+          job-secret: ${{ secrets.JOB_SECRET }}
+          label: ${{ needs.setup-instance.outputs.runner-name }}
+
+      - name: Slack Notification
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: rtCamp/action-slack-notify@c33737706dea87cd7784c687dadc9adf1be59990
+        env:
+          SLACK_COLOR: ${{ job.status }}
+          SLACK_MESSAGE: "Instance teardown (backward-compat-tests) finished with status: ${{ job.status }} on '${{ env.BRANCH }}'. (${{ env.ACTION_RUN_URL }})"

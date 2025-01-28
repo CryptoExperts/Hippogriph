@@ -1,0 +1,16 @@
+{
+  "name": "js_on_wasm_tests",
+  "version": "1.0.0",
+  "description": "JS API tests",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test --test-reporter=tap",
+    "format": "prettier . --write",
+    "check-format": "prettier . --check"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3"
+  },
+  "author": "",
+  "license": "BSD-3-Clause-Clear"
+}

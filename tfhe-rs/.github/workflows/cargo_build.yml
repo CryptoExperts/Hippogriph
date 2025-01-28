@@ -1,0 +1,91 @@
+name: Cargo Build TFHE-rs
+
+on:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C target-cpu=native"
+  RUST_BACKTRACE: "full"
+  RUST_MIN_STACK: "8388608"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-builds:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        # GitHub macos-latest are now M1 macs, so use ours, we limit what runs so it will be fast
+        # even with a few PRs
+        os: [large_ubuntu_16, macos-latest, windows-latest]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install latest stable
+        uses: dtolnay/rust-toolchain@a54c7afa936fefeb4456b2dd8068152669aa8203
+        with:
+          toolchain: stable
+
+      - name: Install and run newline linter checks
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        run: |
+          wget https://github.com/fernandrone/linelint/releases/download/0.0.6/linelint-linux-amd64
+          echo "16b70fb7b471d6f95cbdc0b4e5dc2b0ac9e84ba9ecdc488f7bdf13df823aca4b linelint-linux-amd64" > checksum
+          sha256sum -c checksum || exit 1
+          chmod +x linelint-linux-amd64
+          mv linelint-linux-amd64 /usr/local/bin/linelint
+          make check_newline
+
+      - name: Run pcc checks
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        run: |
+          make pcc
+
+      - name: Build tfhe-csprng
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        run: |
+          make build_tfhe_csprng
+
+      - name: Build Release core
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        run: |
+          make build_core AVX512_SUPPORT=ON
+          make build_core_experimental AVX512_SUPPORT=ON
+
+      - name: Build Release boolean
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        run: |
+          make build_boolean
+
+      - name: Build Release shortint
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        run: |
+          make build_shortint
+
+      - name: Build Release integer
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        run: |
+          make build_integer
+
+      - name: Build Release tfhe full
+        run: |
+          make build_tfhe_full
+
+      - name: Build Release c_api
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        run: |
+          make build_c_api
+
+      - name: Build coverage tests
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        run: |
+          make build_tfhe_coverage
+
+      # The wasm build check is a bit annoying to set-up here and is done during the tests in
+      # aws_tfhe_tests.yml

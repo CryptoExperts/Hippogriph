@@ -1,0 +1,79 @@
+# Run CUDA benchmarks on a Hyperstack VM and return parsed results to Slab CI bot.
+name: Cuda benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Instance type"
+        required: true
+        type: choice
+        options:
+          - "l40 (n3-L40x1)"
+          - "single-h100 (n3-H100x1)"
+          - "2-h100 (n3-H100x2)"
+          - "4-h100 (n3-H100x4)"
+          - "multi-h100 (n3-H100x8)"
+          - "multi-h100-nvlink (n3-H100x8-NVLink)"
+          - "multi-h100-sxm5 (n3-H100x8-SXM5)"
+          - "multi-a100-nvlink (n3-A100x8-NVLink)"
+      command:
+        description: "Benchmark command to run"
+        type: choice
+        default: integer_multi_bit
+        options:
+          - integer
+          - integer_multi_bit
+          - integer_compression
+          - pbs
+          - ks
+      op_flavor:
+        description: "Operations set to run"
+        type: choice
+        default: default
+        options:
+          - default
+          - fast_default
+          - unchecked
+      all_precisions:
+        description: "Run all precisions"
+        type: boolean
+        default: false
+      bench_type:
+        description: "Benchmarks type"
+        type: choice
+        default: latency
+        options:
+          - latency
+          - throughput
+          - both
+
+jobs:
+  parse-inputs:
+    runs-on: ubuntu-latest
+    outputs:
+      profile: ${{ steps.parse_profile.outputs.profile }}
+      hardware_name: ${{ steps.parse_hardware_name.outputs.name }}
+    steps:
+      - name: Parse profile
+        id: parse_profile
+        run: |
+          echo "profile=$(echo '${{ inputs.profile }}' | sed 's|\(.*\)[[:space:]](.*)|\1|')" >> "${GITHUB_OUTPUT}"
+
+      - name: Parse hardware name
+        id: parse_hardware_name
+        run: |
+          echo "name=$(echo '${{ inputs.profile }}' | sed 's|.*[[:space:]](\(.*\))|\1|')" >> "${GITHUB_OUTPUT}"
+
+  run-benchmarks:
+    name: Run benchmarks
+    needs: parse-inputs
+    uses: ./.github/workflows/benchmark_gpu_integer_common.yml
+    with:
+      profile: ${{ needs.parse-inputs.outputs.profile }}
+      hardware_name: ${{ needs.parse-inputs.outputs.hardware_name }}
+      command: ${{ inputs.command }}
+      op_flavor: ${{ inputs.op_flavor }}
+      bench_type: ${{ inputs.bench_type }}
+      all_precisions: ${{ inputs.all_precisions }}
+    secrets: inherit

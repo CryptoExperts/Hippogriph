@@ -1,0 +1,34 @@
+# Sync repos
+name: Sync repos
+
+on:
+  push:
+    branches:
+      - 'main'
+  workflow_dispatch:
+
+jobs:
+  sync-repo:
+    if: ${{ github.repository == 'zama-ai/tfhe-rs' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: 'false'
+          token: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+      - name: git-sync
+        uses: wei/git-sync@55c6b63b4f21607da0e9877ca9b4d11a29fc6d83
+        with:
+          source_repo: "zama-ai/tfhe-rs"
+          source_branch: "main"
+          destination_repo: "https://${{ secrets.BOT_USERNAME }}:${{ secrets.FHE_ACTIONS_TOKEN }}@github.com/${{ secrets.SYNC_DEST_REPO }}"
+          destination_branch: "main"
+      - name: git-sync tags
+        uses: wei/git-sync@55c6b63b4f21607da0e9877ca9b4d11a29fc6d83
+        with:
+          source_repo: "zama-ai/tfhe-rs"
+          source_branch: "refs/tags/*"
+          destination_repo: "https://${{ secrets.BOT_USERNAME }}:${{ secrets.FHE_ACTIONS_TOKEN }}@github.com/${{ secrets.SYNC_DEST_REPO }}"
+          destination_branch: "refs/tags/*"

@@ -1,0 +1,230 @@
+# Run benchmarks on an RTX 4090 machine and return parsed results to Slab CI bot.
+name: TFHE Cuda Backend - 4090 benchmarks
+
+env:
+  CARGO_TERM_COLOR: always
+  RESULTS_FILENAME: parsed_benchmark_results_${{ github.sha }}.json
+  ACTION_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  RUST_BACKTRACE: "full"
+  RUST_MIN_STACK: "8388608"
+  SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+  SLACK_ICON: https://pbs.twimg.com/profile_images/1274014582265298945/OjBKP9kn_400x400.png
+  SLACK_USERNAME: ${{ secrets.BOT_USERNAME }}
+  SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+  MSG_MINIMAL: event,action url,commit
+  BRANCH: ${{ github.head_ref || github.ref }}
+  FAST_BENCH: TRUE
+  REF: ${{ github.event.pull_request.head.sha || github.sha }}
+
+on:
+  # Allows you to run this workflow manually from the Actions tab as an alternative.
+  workflow_dispatch:
+  # Trigger pull_request event on CI files to be able to test changes before merging to main branch.
+  # Workflow would fail if changes come from a forked repository since secrets are not available with this event.
+  pull_request:
+    types: [ labeled ]
+    paths:
+      - '.github/**'
+      - 'ci/**'
+  # General entry point for Zama's pull request as well as contribution from forks.
+  pull_request_target:
+    types: [ labeled ]
+    paths:
+      - '**'
+      - '!.github/**'
+      - '!ci/**'
+  schedule:
+    # Weekly benchmarks will be triggered each Friday at 9p.m.
+    - cron: "0 21 * * 5"
+
+jobs:
+  check-ci-files:
+    uses: ./.github/workflows/check_ci_files_change.yml
+    with:
+      checkout_ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    secrets:
+      REPO_CHECKOUT_TOKEN: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+
+  # Fail if the triggering actor is not part of Zama organization.
+  # If pull_request_target is emitted and CI files have changed, skip this job. This would skip following jobs.
+  check-user-permission:
+    needs: check-ci-files
+    if: github.event_name != 'pull_request_target' ||
+      (github.event_name == 'pull_request_target' && needs.check-ci-files.outputs.ci_file_changed == 'false')
+    uses: ./.github/workflows/check_actor_permissions.yml
+    secrets:
+      TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  cuda-integer-benchmarks:
+    name: Cuda integer benchmarks (RTX 4090)
+    needs: check-user-permission
+    if: ${{ github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' && github.repository == 'zama-ai/tfhe-rs' ||
+      contains(github.event.label.name, '4090_bench') }}
+    concurrency:
+      group: ${{ github.workflow }}_${{ github.ref }}_cuda_integer_bench
+      cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+    runs-on: ["self-hosted", "4090-desktop"]
+    timeout-minutes: 1440 # 24 hours
+    steps:
+      - name: Checkout tfhe-rs
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: 'false'
+          token: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+          ref: ${{ env.REF }}
+
+      - name: Get benchmark details
+        run: |
+          {
+            echo "BENCH_DATE=$(date --iso-8601=seconds)";
+            echo "COMMIT_DATE=$(git --no-pager show -s --format=%cd --date=iso8601-strict ${{ github.sha }})";
+            echo "COMMIT_HASH=$(git describe --tags --dirty)";
+          } >> "${GITHUB_ENV}"
+          echo "FAST_BENCH=TRUE" >> "${GITHUB_ENV}"
+
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@a54c7afa936fefeb4456b2dd8068152669aa8203
+        with:
+          toolchain: nightly
+
+      - name: Checkout Slab repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: zama-ai/slab
+          path: slab
+          persist-credentials: 'false'
+          token: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+
+      - name: Run integer benchmarks
+        run: |
+          make BENCH_OP_FLAVOR=default bench_integer_multi_bit_gpu
+
+      - name: Parse results
+        run: |
+          python3 ./ci/benchmark_parser.py target/criterion ${{ env.RESULTS_FILENAME }} \
+          --database tfhe_rs \
+          --hardware "rtx4090" \
+          --backend gpu \
+          --project-version "${{ env.COMMIT_HASH }}" \
+          --branch ${{ github.ref_name }} \
+          --commit-date "${{ env.COMMIT_DATE }}" \
+          --bench-date "${{ env.BENCH_DATE }}" \
+          --walk-subdirs
+
+      - name: Upload parsed results artifact
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: ${{ github.sha }}_integer_multi_bit_gpu_default
+          path: ${{ env.RESULTS_FILENAME }}
+
+      - name: Send data to Slab
+        shell: bash
+        run: |
+          python3 slab/scripts/data_sender.py ${{ env.RESULTS_FILENAME }} "${{ secrets.JOB_SECRET }}" \
+          --slab-url "${{ secrets.SLAB_URL }}"
+
+      - name: Slack Notification
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: rtCamp/action-slack-notify@c33737706dea87cd7784c687dadc9adf1be59990
+        env:
+          SLACK_COLOR: ${{ job.status }}
+          SLACK_MESSAGE: "Integer RTX 4090 full benchmarks finished with status: ${{ job.status }} on '${{ env.BRANCH }}'. (${{ env.ACTION_RUN_URL }})"
+
+  cuda-core-crypto-benchmarks:
+    name: Cuda core crypto benchmarks  (RTX 4090)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || contains(github.event.label.name, '4090_bench') }}
+    needs: cuda-integer-benchmarks
+    concurrency:
+      group: ${{ github.workflow }}_${{ github.ref }}_cuda_core_crypto_bench
+      cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+    runs-on: ["self-hosted", "4090-desktop"]
+    timeout-minutes: 1440 # 24 hours
+
+    steps:
+      - name: Checkout tfhe-rs
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: 'false'
+          token: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+
+      - name: Get benchmark details
+        run: |
+          {
+            echo "BENCH_DATE=$(date --iso-8601=seconds)";
+            echo "COMMIT_DATE=$(git --no-pager show -s --format=%cd --date=iso8601-strict ${{ github.sha }})";
+            echo "COMMIT_HASH=$(git describe --tags --dirty)";
+          } >> "${GITHUB_ENV}"
+
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@a54c7afa936fefeb4456b2dd8068152669aa8203
+        with:
+          toolchain: nightly
+
+      - name: Checkout Slab repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: zama-ai/slab
+          path: slab
+          persist-credentials: 'false'
+          token: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+
+      - name: Run core crypto benchmarks
+        run: |
+          make bench_pbs_gpu
+          make bench_ks_gpu
+
+      - name: Parse results
+        run: |
+          python3 ./ci/benchmark_parser.py target/criterion ${{ env.RESULTS_FILENAME }} \
+          --database tfhe_rs \
+          --hardware "rtx4090" \
+          --backend gpu \
+          --project-version "${{ env.COMMIT_HASH }}" \
+          --branch ${{ github.ref_name }} \
+          --commit-date "${{ env.COMMIT_DATE }}" \
+          --bench-date "${{ env.BENCH_DATE }}" \
+          --walk-subdirs \
+      
+
+      - name: Upload parsed results artifact
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: ${{ github.sha }}_core_crypto
+          path: ${{ env.RESULTS_FILENAME }}
+
+      - name: Send data to Slab
+        shell: bash
+        run: |
+          echo "Computing HMac on results file"
+          SIGNATURE="$(slab/scripts/hmac_calculator.sh ${{ env.RESULTS_FILENAME }} '${{ secrets.JOB_SECRET }}')"
+          echo "Sending results to Slab..."
+          curl -v -k \
+          -H "Content-Type: application/json" \
+          -H "X-Slab-Repository: ${{ github.repository }}" \
+          -H "X-Slab-Command: store_data_v2" \
+          -H "X-Hub-Signature-256: sha256=${SIGNATURE}" \
+          -d @${{ env.RESULTS_FILENAME }} \
+          ${{ secrets.SLAB_URL }}
+
+      - name: Slack Notification
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: rtCamp/action-slack-notify@c33737706dea87cd7784c687dadc9adf1be59990
+        env:
+          SLACK_COLOR: ${{ job.status }}
+          SLACK_MESSAGE: "Core crypto RTX 4090 full benchmarks finished with status: ${{ job.status }} on '${{ env.BRANCH }}'. (${{ env.ACTION_RUN_URL }})"
+
+  remove_github_label:
+    name: Remove 4090 bench label
+    if: ${{ always() && github.event_name == 'pull_request_target' }}
+    needs: [cuda-integer-benchmarks, cuda-core-crypto-benchmarks]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions-ecosystem/action-remove-labels@2ce5d41b4b6aa8503e285553f75ed56e0a40bae0
+        with:
+          labels: 4090_bench
+          github_token: ${{ secrets.GITHUB_TOKEN }}

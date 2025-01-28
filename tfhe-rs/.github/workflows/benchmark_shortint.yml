@@ -1,0 +1,182 @@
+# Run all shortint benchmarks on an AWS instance and return parsed results to Slab CI bot.
+name: Shortint full benchmarks
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly benchmarks will be triggered each Saturday at 1a.m.
+    - cron: '0 1 * * 6'
+    # Quarterly benchmarks will be triggered right before end of quarter, the 25th of the current month at 4a.m.
+    # These benchmarks are far longer to execute hence the reason to run them only four time a year.
+    - cron: '0 4 25 MAR,JUN,SEP,DEC *'
+
+
+env:
+  CARGO_TERM_COLOR: always
+  RESULTS_FILENAME: parsed_benchmark_results_${{ github.sha }}.json
+  ACTION_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  RUST_BACKTRACE: "full"
+  RUST_MIN_STACK: "8388608"
+  SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+  SLACK_ICON: https://pbs.twimg.com/profile_images/1274014582265298945/OjBKP9kn_400x400.png
+  SLACK_USERNAME: ${{ secrets.BOT_USERNAME }}
+  SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+
+jobs:
+  prepare-matrix:
+    name: Prepare operations matrix
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule' ||
+      (github.event_name == 'schedule' && github.repository == 'zama-ai/tfhe-rs')
+    outputs:
+      op_flavor: ${{ steps.set_op_flavor.outputs.op_flavor }}
+    steps:
+      - name: Weekly benchmarks
+        if: github.event_name == 'workflow_dispatch' ||
+          github.event.schedule == '0 1 * * 6'
+        run: |
+          echo "OP_FLAVOR=[\"default\"]" >> "${GITHUB_ENV}"
+
+      - name: Quarterly benchmarks
+        if: github.event.schedule == '0 4 25 MAR,JUN,SEP,DEC *'
+        run: |
+          echo "OP_FLAVOR=[\"default\", \"smart\", \"unchecked\"]" >> "${GITHUB_ENV}"
+
+      - name: Set operation flavor output
+        id: set_op_flavor
+        run: |
+          echo "op_flavor=${{ toJSON(env.OP_FLAVOR) }}" >> "${GITHUB_OUTPUT}"
+
+  setup-instance:
+    name: Setup instance (shortint-benchmarks)
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+    outputs:
+      runner-name: ${{ steps.start-instance.outputs.label }}
+    steps:
+      - name: Start instance
+        id: start-instance
+        uses: zama-ai/slab-github-runner@79939325c3c429837c10d6041e4fd8589d328bac
+        with:
+          mode: start
+          github-token: ${{ secrets.SLAB_ACTION_TOKEN }}
+          slab-url: ${{ secrets.SLAB_BASE_URL }}
+          job-secret: ${{ secrets.JOB_SECRET }}
+          backend: aws
+          profile: bench
+
+  shortint-benchmarks:
+    name: Execute shortint benchmarks for all operations flavor
+    needs: [ prepare-matrix, setup-instance ]
+    runs-on: ${{ needs.setup-instance.outputs.runner-name }}
+    concurrency:
+      group: ${{ github.workflow }}_${{ github.ref }}
+      cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+    continue-on-error: true
+    strategy:
+      max-parallel: 1
+      matrix:
+        op_flavor: ${{ fromJson(needs.prepare-matrix.outputs.op_flavor) }}
+    steps:
+      - name: Checkout tfhe-rs repo with tags
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: 'false'
+          token: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+
+      - name: Get benchmark details
+        run: |
+          {
+            echo "BENCH_DATE=$(date --iso-8601=seconds)";
+            echo "COMMIT_DATE=$(git --no-pager show -s --format=%cd --date=iso8601-strict ${{ github.sha }})";
+            echo "COMMIT_HASH=$(git describe --tags --dirty)";
+          } >> "${GITHUB_ENV}"
+
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@a54c7afa936fefeb4456b2dd8068152669aa8203
+        with:
+          toolchain: nightly
+
+      - name: Checkout Slab repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: zama-ai/slab
+          path: slab
+          persist-credentials: 'false'
+          token: ${{ secrets.REPO_CHECKOUT_TOKEN }}
+
+      - name: Run benchmarks with AVX512
+        run: |
+          make BENCH_OP_FLAVOR=${{ matrix.op_flavor }} bench_shortint
+
+      - name: Parse results
+        run: |
+          COMMIT_DATE="$(git --no-pager show -s --format=%cd --date=iso8601-strict ${{ github.sha }})"
+          COMMIT_HASH="$(git describe --tags --dirty)"
+          python3 ./ci/benchmark_parser.py target/criterion ${{ env.RESULTS_FILENAME }} \
+          --database tfhe_rs \
+          --hardware "hpc7a.96xlarge" \
+          --project-version "${COMMIT_HASH}" \
+          --branch ${{ github.ref_name }} \
+          --commit-date "${COMMIT_DATE}" \
+          --bench-date "${{ env.BENCH_DATE }}" \
+          --walk-subdirs \
+          --name-suffix avx512
+
+      # This small benchmark needs to be executed only once.
+      - name: Measure key sizes
+        if: matrix.op_flavor == 'default'
+        run: |
+          make measure_shortint_key_sizes
+
+      - name: Parse key sizes results
+        if: matrix.op_flavor == 'default'
+        run: |
+          python3 ./ci/benchmark_parser.py tfhe/shortint_key_sizes.csv ${{ env.RESULTS_FILENAME }} \
+          --object-sizes \
+          --append-results
+
+      - name: Upload parsed results artifact
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: ${{ github.sha }}_shortint_${{ matrix.op_flavor }}
+          path: ${{ env.RESULTS_FILENAME }}
+
+      - name: Send data to Slab
+        shell: bash
+        run: |
+          python3 slab/scripts/data_sender.py ${{ env.RESULTS_FILENAME }} "${{ secrets.JOB_SECRET }}" \
+          --slab-url "${{ secrets.SLAB_URL }}"
+
+      - name: Slack Notification
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: rtCamp/action-slack-notify@c33737706dea87cd7784c687dadc9adf1be59990
+        env:
+          SLACK_COLOR: ${{ job.status }}
+          SLACK_MESSAGE: "Shortint full benchmarks finished with status: ${{ job.status }}. (${{ env.ACTION_RUN_URL }})"
+
+  teardown-instance:
+    name: Teardown instance (shortint-benchmarks)
+    if: ${{ always() && needs.setup-instance.result == 'success' }}
+    needs: [ setup-instance, shortint-benchmarks ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop instance
+        id: stop-instance
+        uses: zama-ai/slab-github-runner@79939325c3c429837c10d6041e4fd8589d328bac
+        with:
+          mode: stop
+          github-token: ${{ secrets.SLAB_ACTION_TOKEN }}
+          slab-url: ${{ secrets.SLAB_BASE_URL }}
+          job-secret: ${{ secrets.JOB_SECRET }}
+          label: ${{ needs.setup-instance.outputs.runner-name }}
+
+      - name: Slack Notification
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: rtCamp/action-slack-notify@c33737706dea87cd7784c687dadc9adf1be59990
+        env:
+          SLACK_COLOR: ${{ job.status }}
+          SLACK_MESSAGE: "Instance teardown (shortint-benchmarks) finished with status: ${{ job.status }}. (${{ env.ACTION_RUN_URL }})"
