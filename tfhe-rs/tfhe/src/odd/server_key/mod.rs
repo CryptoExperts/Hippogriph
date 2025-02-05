@@ -45,9 +45,7 @@ impl ServerKey {
         inputs: &Vec<Ciphertext>,
         encodings_out: &Vec<Encoding>,
         t: u64,
-        f: &dyn Fn(u64) -> u64,
-        client_key_debug: &ClientKey,
-        log : bool
+        f: &dyn Fn(u64) -> u64
     ) -> Vec<Ciphertext> {
         let origin_submodulis: Vec<u64> = inputs
             .iter()
@@ -70,11 +68,11 @@ impl ServerKey {
 
 
         let r0 = OddEngine::with_thread_local_mut(|engine| {
-            engine.simple_tree_bootstrapping(&common_factor.clone(), inputs, &encodings_out[0], t, lut_f0, &self, client_key_debug, log)
+            engine.simple_tree_bootstrapping(&common_factor.clone(), inputs, &encodings_out[0], t, lut_f0, &self)
         });
     
         let r1 = OddEngine::with_thread_local_mut(|engine| {
-            engine.simple_tree_bootstrapping(&common_factor.clone(), inputs, &encodings_out[1], t, lut_f1, &self, client_key_debug, false)
+            engine.simple_tree_bootstrapping(&common_factor.clone(), inputs, &encodings_out[1], t, lut_f1, &self)
         });
     
         vec![r1, r0]

@@ -616,7 +616,6 @@ impl Bootstrapper {
         encs_out : &Vec<Encoding>,
         lut_fis : &Vec<Vec<u64>>,
         server_key: &ServerKey,
-        client_key_debug : &ClientKey
     ) -> Vec<LweCiphertext<Vec<u64>>>{
         // let start_mvb = Instant::now();
 

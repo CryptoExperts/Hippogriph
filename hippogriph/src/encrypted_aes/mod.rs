@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crate::clear_aes::increment_iv_u64;
 
 use clear::clear_sub_bytes;
@@ -6,9 +8,8 @@ use tfhe::{core_crypto::prelude::DynamicDistribution, odd::prelude::*};
 
 // use crate::encrypted_aes::aes_utils::{pretty_print_clear, u8_to_vec_bool_integer};
 
-use self::{aes_utils::vec_bool_to_u8, casts::{decomposer, recomposer}, linear_circuit::LinearCircuit};
+use self::{casts::{decomposer, recomposer}, linear_circuit::LinearCircuit};
 
-mod aes_utils;
 mod linear_circuit;
 mod casts;
 mod clear;
@@ -42,13 +43,13 @@ impl AESStateBoolean{
         &self.bits[col * 8 * 4 + row * 8 + bit]
     }
 
-    pub fn aes_recomposer(&self, server_key : &ServerKey, client_key_debug : &ClientKey)-> AESStateArithmetic{
+    pub fn aes_recomposer(&self, server_key : &ServerKey)-> AESStateArithmetic{
         let encoding_arithmetic = Encoding::new_canonical(16, (0..16).collect(), 17);
         AESStateArithmetic{
             nibbles : (0..32)
                     .into_par_iter() //comment this line to deactivate parallelization
                     .map(|i| self.bits[i*4..(i+1)*4].to_vec())
-                    .map(|v| recomposer(&v, &encoding_arithmetic, &server_key, &client_key_debug))
+                    .map(|v| recomposer(&v, &encoding_arithmetic, &server_key))
                     .collect(),
             encoding : encoding_arithmetic
         }
@@ -60,13 +61,11 @@ impl AESStateBoolean{
         let mut buffer = twisted_row;
         for i in 0..4{
             let new_row : Vec<Ciphertext> = (0..32)
-                                            .map(|j_bit| server_key.simple_sum(&vec![self.bits[i * 32 + j_bit].clone(), buffer[i].clone()]))
+                                            .map(|j_bit| server_key.simple_sum(&vec![self.bits[i * 32 + j_bit].clone(), buffer[j_bit].clone()]))
                                             .collect();
             new_row.iter().enumerate().for_each(|(j_bit, c)| self.bits[i * 32 + j_bit] = c.clone());
             buffer = new_row;
         }
-
-
     }
 
     pub fn extract_last_row(&self) -> Vec<Ciphertext>{
@@ -85,12 +84,11 @@ pub struct AESStateArithmetic{
 
 impl AESStateArithmetic{
 
-    pub fn aes_decomposer(&self, server_key : &ServerKey, client_key_debug : &ClientKey) -> AESStateBoolean{
+    pub fn aes_decomposer(&self, server_key : &ServerKey) -> AESStateBoolean{
         AESStateBoolean{
             bits : self.nibbles
-            //.iter()
-            .par_iter() //select the line to select parallelization
-            .map(|x| decomposer(x, &Encoding::parity_encoding(), server_key, client_key_debug))
+            .par_iter()
+            .map(|x| decomposer(x, &Encoding::parity_encoding(), server_key))
             .collect::<Vec<Vec<Ciphertext>>>()
             .concat()
         }
@@ -100,18 +98,17 @@ impl AESStateArithmetic{
 
 
 
-fn sub_bytes(state : &AESStateArithmetic, server_key:&ServerKey, client_key_debug : &ClientKey) -> AESStateArithmetic{
+fn sub_bytes(state : &AESStateArithmetic, server_key:&ServerKey) -> AESStateArithmetic{
     assert_eq!(state.nibbles.len(), 32);
     AESStateArithmetic{
         nibbles : (0..16)
-                .into_par_iter()    //comment this line to activate parallelisation
-                .map(|i| (i, state.nibbles[i*2..(i+1)*2].to_vec()))
-                .map(|(i, v)| server_key.full_tree_bootstrapping(&v, 
+                .into_par_iter()
+                .map(|i| state.nibbles[i*2..(i+1)*2].to_vec())
+                .map(|v| server_key.full_tree_bootstrapping(&v, 
                                                                         &vec![state.encoding.clone();2],
                                                                         256,
-                                                                        &clear_sub_bytes, 
-                                                                        client_key_debug,
-                                                                        i == 0))
+                                                                        &clear_sub_bytes
+                                                                    ))
                 .collect::<Vec<Vec<Ciphertext>>>()
                 .concat(),
         encoding : state.encoding.clone()
@@ -163,19 +160,19 @@ fn mix_columns(state : &AESStateBoolean, server_key:&ServerKey) -> AESStateBoole
 }
 
 
- fn send_bits_to_nibbles_key_expansion(bits : &Vec<Ciphertext>, server_key : &ServerKey, client_key_debug : &ClientKey) -> Vec<Ciphertext>{
+ fn send_bits_to_nibbles_key_expansion(bits : &Vec<Ciphertext>, server_key : &ServerKey) -> Vec<Ciphertext>{
     assert_eq!(bits.len(), 32);
     let encoding_arithmetic = Encoding::new_canonical(16, (0..16).collect(), 17);
 
     (0..8)
         .into_par_iter() //comment this line to deactivate parallelization
         .map(|i| bits[i*4..(i+1)*4].to_vec())
-        .map(|v| recomposer(&v, &encoding_arithmetic, &server_key, &client_key_debug))
+        .map(|v| recomposer(&v, &encoding_arithmetic, &server_key))
         .collect()
 }
 
 
- fn sub_words_key_expansion(nibbles : &Vec<Ciphertext>, server_key : &ServerKey, client_key_debug : &ClientKey) -> Vec<Ciphertext>{
+ fn sub_words_key_expansion(nibbles : &Vec<Ciphertext>, server_key : &ServerKey) -> Vec<Ciphertext>{
     assert_eq!(nibbles.len(), 8);
     (0..4)
             .into_par_iter()  
@@ -183,18 +180,16 @@ fn mix_columns(state : &AESStateBoolean, server_key:&ServerKey) -> AESStateBoole
             .map(|v| server_key.full_tree_bootstrapping(&v, 
                                                                     &vec![Encoding::new_canonical(16, (0..16).collect(), 17);2],
                                                                     256,
-                                                                    &clear_sub_bytes, 
-                                                                    client_key_debug,
-                                                                    false))
+                                                                    &clear_sub_bytes))
             .collect::<Vec<Vec<Ciphertext>>>()
             .concat()
 }
 
-fn send_nibbles_to_bits_key_expansion(nibbles : &Vec<Ciphertext>,  server_key : &ServerKey, client_key_debug : &ClientKey) -> Vec<Ciphertext>{
+fn send_nibbles_to_bits_key_expansion(nibbles : &Vec<Ciphertext>,  server_key : &ServerKey) -> Vec<Ciphertext>{
     assert_eq!(nibbles.len(), 8);
     nibbles
             .par_iter() 
-            .map(|x| decomposer(x, &Encoding::parity_encoding(), server_key, client_key_debug))
+            .map(|x| decomposer(x, &Encoding::parity_encoding(), server_key))
             .collect::<Vec<Vec<Ciphertext>>>()
             .concat()
 }
@@ -213,10 +208,11 @@ fn add_round_constant_key_expansion(bits: &mut Vec<Ciphertext>, rcon_int : u8, s
 }
 
 
-pub fn encrypted_key_expansion(encrypted_key: Vec<Ciphertext>, server_key :  &ServerKey, client_key_debug : &ClientKey) -> Vec<Vec<Ciphertext>>{
+
+pub fn encrypted_key_expansion(encrypted_key: Vec<Ciphertext>, server_key :  &ServerKey) -> Vec<Vec<Ciphertext>>{
     // We use the same structures that for the encryption
     assert_eq!(encrypted_key.len(), 128);
-    
+
     static ROUND_CONSTANTS: [u8;11] = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36];
 
 
@@ -234,17 +230,20 @@ pub fn encrypted_key_expansion(encrypted_key: Vec<Ciphertext>, server_key :  &Se
         rot_words_key_expansion(&mut bits_last_row);
 
         // send the bits to nibbles
-        let mut nibbles_last_row = send_bits_to_nibbles_key_expansion(&bits_last_row, &server_key, &client_key_debug);
-        
+        let mut nibbles_last_row = send_bits_to_nibbles_key_expansion(&bits_last_row, &server_key);
+
+
         // apply the subword to every word, but first we need to recompose them in nibbles
-        nibbles_last_row = sub_words_key_expansion(&nibbles_last_row, server_key, client_key_debug);
+        nibbles_last_row = sub_words_key_expansion(&nibbles_last_row, server_key);
+
         
         // resend everyone into the boolean world
-        bits_last_row = send_nibbles_to_bits_key_expansion(&nibbles_last_row, &server_key, &client_key_debug);
+        bits_last_row = send_nibbles_to_bits_key_expansion(&nibbles_last_row, &server_key);
+
         
         // add the round counstant
         add_round_constant_key_expansion(&mut bits_last_row, ROUND_CONSTANTS[i], &server_key);
-       
+        
         // compute the union of both state
         let mut current_round_key =  state_round_keys[i-1].clone();
         current_round_key.next_round_keys(bits_last_row, &server_key);
@@ -257,80 +256,46 @@ pub fn encrypted_key_expansion(encrypted_key: Vec<Ciphertext>, server_key :  &Se
 
 
 
-pub fn encrypted_aes(state: &AESStateBoolean, server_key:&ServerKey, round_keys : &Vec<Vec<Ciphertext>>, client_key_debug : &ClientKey) -> AESStateBoolean{
-    // //Debug
-    // let print_debug = |state : &AESStateBoolean, expected : &str|{
-    //     let result_debug = state.tfhe_decryption_bits(&client_key_debug);
-    //     pretty_print_clear(&result_debug);
-    //     println!("Expected\n{}", expected);
-    //     println!();
-    // };
-
-
-    // let print_debug_arith = |state_arith: &AESStateArithmetic, expected : &str|{
-    //     let result = state_arith.nibbles.iter()
-    //                                     .map(|nib| client_key_debug.decrypt(&nib))
-    //                                     .collect();
-    //     pretty_print_nibbles(&result);
-    //     println!("Expected\n{}", expected);
-    //     println!();
-    // };
-
+pub fn encrypted_aes(state: &AESStateBoolean, server_key:&ServerKey, round_keys : &Vec<Vec<Ciphertext>>, client_key_debug : &ClientKey) -> Vec<u8>{
     // Initial round key addition
     let mut state_bool =  add_round_key(state, &round_keys[0], server_key);
-    // print_debug(&state_bool, expected[0]); 
     
-    let mut state_arith = state_bool.aes_recomposer(&server_key, &client_key_debug);
-    println!("After recomposition :");
-    // print_debug_arith(&state_arith, expected[0]);
+    let mut state_arith = state_bool.aes_recomposer(&server_key);
     
     //9 full rounds
     for r in 0..9{
-        // println!("TIMING START_ROUND {} {:?}", r+1, SystemTime::now().duration_since(UNIX_EPOCH).unwrap());
-        // println!("Round {}", r + 1);
-        state_arith = sub_bytes(&state_arith, server_key, client_key_debug);
-        // println!("TIMING POST_SUB_BYTES {} {:?}", r+1, SystemTime::now().duration_since(UNIX_EPOCH).unwrap());
-        // print_debug_arith(&state_arith, "");
-        
+        state_arith = sub_bytes(&state_arith, server_key);      
 
-        state_bool = state_arith.aes_decomposer(&server_key, &client_key_debug);
-        // println!("TIMING POST_BOOLEAN_DECOMPOSITION {} {:?}", r+1, SystemTime::now().duration_since(UNIX_EPOCH).unwrap());
-        // print_debug_arith(&state_arith, "");
-        
+        state_bool = state_arith.aes_decomposer(&server_key);
+       
 
         state_bool = shift_rows(&state_bool);
-        // println!("TIMING POST_SHIFT_ROWS {} {:?}", r+1, SystemTime::now().duration_since(UNIX_EPOCH).unwrap());
 
         state_bool = mix_columns(&state_bool, server_key);
-        // println!("TIMING POST_MIX_COLUMNS {} {:?}", r+1, SystemTime::now().duration_since(UNIX_EPOCH).unwrap());
 
         state_bool = add_round_key(&state_bool, &round_keys[r + 1], server_key);
-        // println!("TIMING POST_ADD_ROUND_KEYS {} {:?}", r+1, SystemTime::now().duration_since(UNIX_EPOCH).unwrap());
         
-        // print_debug(&state_bool, expected[r+1]);
-
-
-        state_arith = state_bool.aes_recomposer(&server_key, &client_key_debug);
-        // println!("TIMING POST_BOOLEAN_RECOMPOSITION {} {:?}", r+1, SystemTime::now().duration_since(UNIX_EPOCH).unwrap());
-        // print_debug_arith(&state_arith, expected[r+1]);
-        
+        state_arith = state_bool.aes_recomposer(&server_key);       
     }
-    state_arith = sub_bytes(&state_arith, server_key, client_key_debug);
+    state_arith = sub_bytes(&state_arith, server_key);
     
+    state_bool = state_arith.aes_decomposer(&server_key);
     
-    state_bool = state_arith.aes_decomposer(&server_key, &client_key_debug);
-    
-
     state_bool = shift_rows(&state_bool);
-    state_bool = add_round_key(&state_bool, &round_keys[10], server_key);
     
-    state_bool
+    state_bool = add_round_key(&state_bool, &round_keys[10], server_key);
+
+    let clear_bits = state_bool.tfhe_decryption_bits(&client_key_debug);
+
+    (0..16).map(|i| 
+        clear_bits[i * 8..(i+1) * 8].iter().enumerate().map(|(i, bit)| (bit * (1 << (7 - i))) as u8).sum::<u8>())
+        .collect()
 }
 
 
 
 
-// pub const PARAMETERS_40: CustomOddParameters = CustomOddParameters {
+// pub const _PARAMETERS_40: CustomOddParameters = CustomOddParameters {
 //     lwe_dimension: LweDimension(754),
 //     glwe_dimension: GlweDimension(1),
 //     polynomial_size: PolynomialSize(1024),
@@ -348,37 +313,36 @@ pub fn encrypted_aes(state: &AESStateBoolean, server_key:&ServerKey, round_keys 
 
 
 
-// pub const PARAMETERS_128: CustomOddParameters = CustomOddParameters {
-//     lwe_dimension: LweDimension(900),
-//     glwe_dimension: GlweDimension(1),
-//     polynomial_size: PolynomialSize(4096),
-//     lwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(6.8e-7)),
-//     glwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(2.168404344971009e-19)),
-//     pbs_base_log: DecompositionBaseLog(15),
-//     pbs_level: DecompositionLevelCount(2),
-//     ks_base_log: DecompositionBaseLog(3),
-//     ks_level: DecompositionLevelCount(6),
-//     encryption_key_choice: EncryptionKeyChoice::Big,
-// };
-
-
-pub const PARAMETERS_64: CustomOddParameters = CustomOddParameters {
-    lwe_dimension: LweDimension(1024),
+pub const PARAMETERS_128: CustomOddParameters = CustomOddParameters {
+    lwe_dimension: LweDimension(900),
     glwe_dimension: GlweDimension(1),
     polynomial_size: PolynomialSize(4096),
-    lwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(7.3e-8)),
-    glwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(5e-32)),
-    pbs_base_log: DecompositionBaseLog(26),
-    pbs_level: DecompositionLevelCount(1),
-    ks_base_log: DecompositionBaseLog(8),
-    ks_level: DecompositionLevelCount(2),
+    lwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(6.8e-7)),
+    glwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(2.168404344971009e-19)),
+    pbs_base_log: DecompositionBaseLog(15),
+    pbs_level: DecompositionLevelCount(2),
+    ks_base_log: DecompositionBaseLog(3),
+    ks_level: DecompositionLevelCount(6),
     encryption_key_choice: EncryptionKeyChoice::Big,
 };
 
 
-pub fn demo_encrypted_aes(number_of_outputs: u32, iv: &String, key: &String){
+// pub const PARAMETERS_64: CustomOddParameters = CustomOddParameters {
+//     lwe_dimension: LweDimension(850),
+//     glwe_dimension: GlweDimension(2),
+//     polynomial_size: PolynomialSize(1024),
+//     lwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(1.65e-6)),
+//     glwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(5e-32)),
+//     pbs_base_log: DecompositionBaseLog(26),
+//     pbs_level: DecompositionLevelCount(1),
+//     ks_base_log: DecompositionBaseLog(8),
+//     ks_level: DecompositionLevelCount(5),
+//     encryption_key_choice: EncryptionKeyChoice::Big,
+// };
 
-    let parameters = PARAMETERS_64;    //HERE SELECT THE PARAMETER SET
+
+pub fn demo_encrypted_aes(number_of_outputs: usize, iv: &String, key: &String, ciphertexts_conventional : Vec<Vec<u8>>) {
+    let parameters = PARAMETERS_128;    //HERE SELECT THE PARAMETER SET
 
     let (client_key, server_key) = gen_keys(&parameters);
 
@@ -399,10 +363,12 @@ pub fn demo_encrypted_aes(number_of_outputs: u32, iv: &String, key: &String){
                                                         .collect::<Vec<Vec<Ciphertext>>>()
                                                         .concat();
 
-    let encrypted_round_keys = encrypted_key_expansion(encrypted_aes_key, &server_key, &client_key);
+    let key_expansion_start = Instant::now();
+    let encrypted_round_keys = encrypted_key_expansion(encrypted_aes_key, &server_key);
+    println!("AES key expansion took: {:?}", key_expansion_start.elapsed());
 
-
-    for _ in 0..number_of_outputs {
+    let encryption_start = Instant::now();
+    for i in 0..number_of_outputs {
         // Treat the IV as a counter and increment it for each output
         let counter_block = iv_bytes.clone();
 
@@ -419,14 +385,13 @@ pub fn demo_encrypted_aes(number_of_outputs: u32, iv: &String, key: &String){
 
         let result = encrypted_aes(&state, &server_key, &encrypted_round_keys, &client_key);
 
+        // Check that the fhe computations yielded correct results
+        println!("Real result : {:?}", ciphertexts_conventional[i]);
+        println!(" FHE result : {:?}", result);
+        assert_eq!(result, ciphertexts_conventional[i]);
 
-        let result_clear = result.tfhe_decryption_bits(&client_key);
-        let mut output = String::new();
-        (0..16).for_each(|i| {
-            output.push_str(&format!("{:02x} ", vec_bool_to_u8(&result_clear[i * 8..(i + 1) * 8].to_vec())));
-        });
-    
         // Increment the IV (counter) as a 128-bit value (big-endian)
         increment_iv_u64(&mut iv_bytes);
     }
+    println!("AES of {} outputs computed in {:?}", number_of_outputs, encryption_start.elapsed());
 }    

@@ -16,5 +16,10 @@ As Hippogryph requires som new cryptographic primitives not implemented in the o
 - The $(o, p)$-encoding notion
 - The advanced homomorphic operators "multi-value bootstrapping" and "tree bootstrapping"
 
+Example of usage:
+```
+./target/release/hippogriph --number-of-outputs 100 --iv "00112233445566778899AABBCCDDEEFF" --key "000102030405060708090A0B0C0D0E0F
+```
+
 
 If any questions, contact the authors of the papers.

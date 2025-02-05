@@ -3,7 +3,7 @@ use aes::cipher::{BlockEncrypt, KeyInit};
 use aes::cipher::generic_array::GenericArray;
 use hex;
 
-pub fn demo_clear_aes(number_of_outputs: u32, iv: &String, key: &String) {
+pub fn demo_clear_aes(number_of_outputs: usize, iv: &String, key: &String) -> Vec<Vec<u8>>{
     // Convert the key and IV from hexadecimal strings to byte arrays
     let key_bytes = hex::decode(key).expect("Invalid hex for key");
     let mut iv_bytes = hex::decode(iv).expect("Invalid hex for IV");
@@ -20,7 +20,8 @@ pub fn demo_clear_aes(number_of_outputs: u32, iv: &String, key: &String) {
 
     println!("Encrypted outputs:");
 
-    for i in 0..number_of_outputs {
+    let mut outputs = vec![];
+    for _ in 0..number_of_outputs {
         // Treat the IV as a counter and increment it for each output
         let counter_block = iv_bytes.clone();
 
@@ -30,17 +31,12 @@ pub fn demo_clear_aes(number_of_outputs: u32, iv: &String, key: &String) {
         // Encrypt the block using AES-128 in ECB mode
         cipher.encrypt_block(&mut block);
 
-        // Print the encrypted output as a hex string
-        println!(
-            "Counter {}: {:02x?} -> {:02x?}",
-            i,
-            counter_block,
-            block.as_slice()
-        );
+        outputs.push(block.to_vec());
 
         // Increment the IV (counter) as a 128-bit value (big-endian)
         increment_iv_u8(&mut iv_bytes);
     }
+    outputs
 }
 
 

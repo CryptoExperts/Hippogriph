@@ -8,18 +8,10 @@ use tfhe_csprng::generators::DefaultRandomGenerator;
 use crate::core_crypto::algorithms::*;
 use crate::core_crypto::entities::*;
 use crate::core_crypto::prelude::CiphertextModulus;
-use crate::core_crypto::prelude::Container;
-use crate::core_crypto::prelude::ContiguousEntityContainer;
 use crate::core_crypto::prelude::EncryptionKeyChoice;
-use crate::core_crypto::prelude::LweSize;
-use crate::core_crypto::prelude::MonomialDegree;
 use crate::core_crypto::prelude::PBSOrder;
-use crate::core_crypto::prelude::PlaintextCount;
 use crate::odd::prelude::*;
 use std::cell::RefCell;
-use std::time::Instant;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 pub mod bootstrapping;
 use crate::core_crypto::commons::generators::{
     DeterministicSeeder, EncryptionRandomGenerator, SecretRandomGenerator,
@@ -232,77 +224,12 @@ impl OddEngine {
             }
         }
     }
-
-    pub fn test_mvb(&mut self, ct: &GlweCiphertext<Vec<u64>>, client_key: &ClientKey) {
-        for i in 0..client_key.parameters.polynomial_size.0 {
-            let mut output_lwe = LweCiphertext::new(
-                0,
-                LweSize(
-                    client_key.parameters.glwe_dimension.0
-                        * client_key.parameters.polynomial_size.0
-                        + 1,
-                ),
-                CiphertextModulus::new_native(),
-            );
-            extract_lwe_sample_from_glwe_ciphertext(ct, &mut output_lwe, MonomialDegree(i));
-            let decrypted = decrypt_lwe_ciphertext(
-                &client_key.glwe_secret_key.as_lwe_secret_key(),
-                &output_lwe,
-            );
-            println!(
-                "{} -> {}",
-                decrypted.0,
-                decrypted.0 as f64 / (1u64 << 32) as f64 * 17f64
-            );
-        }
-    }
 }
 
 ////// C'est ici que ça se passe !
 ///
 
 impl OddEngine {
-    pub fn exec_gadget_with_extraction(
-        &mut self,
-        enc_in: &Vec<Encoding>,
-        enc_inter: &Encoding,
-        enc_out: &Encoding,
-        input: &Vec<Ciphertext>,
-        server_key: &ServerKey,
-    ) -> Ciphertext {
-        let size = match server_key.pbs_order {
-            PBSOrder::KeyswitchBootstrap => server_key
-                .key_switching_key
-                .input_key_lwe_dimension()
-                .to_lwe_size(),
-            PBSOrder::BootstrapKeyswitch => server_key
-                .bootstrapping_key
-                .input_lwe_dimension()
-                .to_lwe_size(),
-        };
-
-        let mut buffer_lwe_before_pbs =
-            LweCiphertext::new(0u64, size, CiphertextModulus::new_native());
-
-        let bootstrapper = &mut self.bootstrapper;
-
-        // compute the sum
-        input.iter().for_each(|x| match x {
-            Ciphertext::EncodingEncrypted(x_ct, _) => {
-                lwe_ciphertext_add_assign(&mut buffer_lwe_before_pbs, &x_ct);
-            }
-            Ciphertext::Trivial(_) => panic!("Not yet implemented with trivial ciphertexts"),
-        });
-
-        // compute the bootstrap and the key switch
-        bootstrapper.apply_bootstrapping_pattern(
-            buffer_lwe_before_pbs,
-            enc_inter,
-            enc_out,
-            server_key,
-        )
-    }
-
     pub fn apply_lut(
         &mut self,
         input: &Ciphertext,
@@ -373,29 +300,6 @@ impl OddEngine {
         }
     }
 
-    pub fn decrypt_glwe_with_builtin_function<OutputCont>(
-        client_key_debug: &ClientKey,
-        glwe_ciphertext: &GlweCiphertext<OutputCont>,
-    ) where
-        OutputCont: Container<Element = u64>,
-    {
-        let mut plaintext_list =
-            PlaintextList::new(0u64, PlaintextCount(glwe_ciphertext.polynomial_size().0));
-        decrypt_glwe_ciphertext(
-            &client_key_debug.glwe_secret_key,
-            &glwe_ciphertext,
-            &mut plaintext_list,
-        );
-        plaintext_list.iter().for_each(|plaintext| {
-            println!(
-                "{:032b} = {} / {}",
-                plaintext.0,
-                (*plaintext.0 as f64 / (1u64 << 32) as f64 * 5.0).round(),
-                plaintext.0
-            )
-        });
-    }
-
     pub fn compute_common_factor(
         &mut self,
         ciphertext: &Ciphertext,
@@ -421,9 +325,7 @@ impl OddEngine {
         encoding_out: &Encoding,
         t: u64,
         lut_fi: Vec<u64>,
-        server_key: &ServerKey,
-        client_key_debug: &ClientKey,
-        log: bool,
+        server_key: &ServerKey
     ) -> Ciphertext {
         let c_0 = inputs[1].clone();
         match c_0 {
@@ -449,28 +351,13 @@ impl OddEngine {
                                 &encoding_in_0,
                                 &vec![encoding_out.clone(); (t / o_0).try_into().unwrap()],
                                 &first_functions,
-                                &server_key,
-                                &client_key_debug,
-                            );
-                        if log {
-                            println!(
-                                "TIMING POST_MVB_TREE ? {:?}",
-                                SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
-                            );
-                        }
-                        
+                                &server_key
+                            );                        
                         let next_accumulator = bootstrapper.pack_into_new_accumulator(
                             first_ciphertexts,
                             server_key,
                             encoding_in_0.get_modulus(),
                         );
-                        if log {
-                            println!(
-                                "TIMING POST_PACKING_TREE ? {:?}",
-                                SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
-                            );
-                        }
-
 
                         //for now, only depth-2 trees
 
@@ -479,25 +366,11 @@ impl OddEngine {
                             Ciphertext::EncodingEncrypted(lwe_c_1, _) => {
                                 //we assume that they both hve the same input encoding
                                 let lwe_c_1_after_ks = server_key.keyswitch(&lwe_c_1);
-                                if log {
-                                    println!(
-                                        "TIMING POST_SECOND_KEYSWITCH_TREE ? {:?}",
-                                        SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
-                                    );
-                                }
-
                                 let final_lwe = bootstrapper.bootstrap(
                                     &lwe_c_1_after_ks,
                                     &next_accumulator,
                                     server_key,
                                 );
-                                if log {
-                                    println!(
-                                        "TIMING POST_SIMPLE_BOOTSTRAPPING_IN_TREE ? {:?}",
-                                        SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
-                                    );
-                                }
-
                                 Ciphertext::EncodingEncrypted(final_lwe, encoding_out.clone())
                             }
                             _ => panic!(),
@@ -571,6 +444,7 @@ impl OddEngine {
         Ciphertext::EncodingEncrypted(result, same_encoding.to_owned())
     }
 
+
     pub fn simple_plaintext_sum(
         &mut self,
         input: &Ciphertext,
@@ -603,6 +477,7 @@ impl OddEngine {
             }
         }
     }
+
 
     pub fn simple_mul_constant(
         &mut self,

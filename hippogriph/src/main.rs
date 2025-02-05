@@ -12,7 +12,7 @@ mod encrypted_aes;
 #[derive(Parser, Debug)]
 struct Cli {
     #[clap(long)]
-    number_of_outputs: u32,
+    number_of_outputs: usize,
 
     #[clap(long)]
     iv: String,
@@ -28,9 +28,18 @@ fn main() {
     // Print the parsed arguments (for demonstration)
     println!("Number of Outputs: {}", args.number_of_outputs);
     println!("IV: {}", args.iv);
-    println!("Key: {}", args.key);
+    println!("Key:{}", args.key);
 
-    demo_clear_aes(args.number_of_outputs, &args.iv, &args.key);
+    let ciphertexts_conventional = demo_clear_aes(args.number_of_outputs, &args.iv, &args.key);
 
-    demo_encrypted_aes(args.number_of_outputs, &args.iv, &args.key);
+//     // Print the encrypted output as a hex string
+//     println!(
+//     "Counter {}: {:02x?} -> {:02x?}",
+//     i,
+//     counter_block,
+//     block.as_slice()
+// );
+
+    demo_encrypted_aes(args.number_of_outputs, &args.iv, &args.key, ciphertexts_conventional);
+
 }

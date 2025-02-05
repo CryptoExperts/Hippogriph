@@ -2,12 +2,8 @@ use tfhe::odd::prelude::*;
 
 
 
-pub fn recomposer(bits : &Vec<Ciphertext>, encoding_out : &Encoding, server_key : &ServerKey, client_key_debug : &ClientKey)->Ciphertext{
+pub fn recomposer(bits : &Vec<Ciphertext>, encoding_out : &Encoding, server_key : &ServerKey)->Ciphertext{
     let new_p = encoding_out.get_modulus();
-    let inv3_mod_p = match new_p {
-        17 => 6,
-        _ => panic!()
-    };
     let negacyclic_encodings_binary = vec![
         Encoding::new_canonical(2, vec![new_p - 4, 4], new_p),
         Encoding::new_canonical(2, vec![new_p - 2, 2], new_p),
@@ -37,7 +33,7 @@ pub fn recomposer(bits : &Vec<Ciphertext>, encoding_out : &Encoding, server_key 
 
 
 
-pub fn decomposer(input : &Ciphertext, encoding_out : &Encoding, server_key : &ServerKey, client_key_debug : &ClientKey) -> Vec<Ciphertext>{
+pub fn decomposer(input : &Ciphertext, encoding_out : &Encoding, server_key : &ServerKey) -> Vec<Ciphertext>{
     let encoding_in = match input{
         Ciphertext::EncodingEncrypted(_, encoding_in) => encoding_in,
         _ => panic!("No encoding with trivial ciphertexts")

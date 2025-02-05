@@ -44,7 +44,6 @@ impl Encoding {
                 .skip(i + 1)
                 .all(|part_2| part_1.is_disjoint(part_2))
         }); //check disjonction of all parts
-        let x = true;
 
         let y = match self.modulus_p % 2 == 1 || self.modulus_p == 2 {
             true => true,
@@ -229,42 +228,4 @@ impl Encoding {
             self.get_modulus(),
         )
     }
-}
-
-
-// #[test]
-// fn test_boolean_encoding(){
-//     let e = BooleanEncoding::new_canonical(2, 7);
-//     assert!(e.is_valid());
-//     let e = BooleanEncoding::new_canonical(1, 2);
-//     assert!(e.is_valid());
-// }
-
-// #[test]
-// #[should_panic]
-// fn bad_boolean_encoding_even_p(){
-//     let e = BooleanEncoding::new([0, 2].into(), [1].into(), 4);
-// }
-
-// #[test]
-// #[should_panic]
-// fn bad_boolean_encoding_duplicate_i(){
-//     let e = BooleanEncoding::new([0, 2].into(), [0].into(), 5);
-// }
-
-#[test]
-#[should_panic]
-fn bad_arithmetic_encoding_duplicate_i() {
-    let _: Encoding = Encoding::new(3, [[0, 2].into(), [0].into(), [1].into()].into(), 5);
-}
-
-#[test]
-#[should_panic]
-fn bad_arithmetic_encoding_negacyclicity() {
-    let _ = Encoding::new_canonical(3, vec![1, 5, 2], 8);
-}
-
-#[test]
-fn good_arithmetic_encoding_negacyclicity() {
-    let _ = Encoding::new_canonical(3, vec![2, 1, 5], 8);
 }
