@@ -6,3 +6,6 @@ edition = "2021"
 [dependencies]
 rayon = "1.10.0"
 tfhe = {path="../tfhe-rs/tfhe", features= ["odd"]}
+clap = { version = "4.0", features = ["derive"] }
+aes = "0.8.4"
+hex = "0.4.3"

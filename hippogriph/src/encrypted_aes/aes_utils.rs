@@ -54,7 +54,7 @@ fn vec_bool_to_u64(v : &Vec<bool>) -> u64{
 }
 
 
-fn u64_to_vec_bool(x : u64) -> Vec<bool>{
+pub fn u64_to_vec_bool(x : u64) -> Vec<bool>{
     (0..32).map(|i| (x >> (31 - i)) % 2 == 1).collect()
 }
 

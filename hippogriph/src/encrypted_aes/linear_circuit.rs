@@ -19,7 +19,7 @@ impl LinearCircuit {
 
 
     // the file of the circuit should contain on the first line N(inputs) Offset(Inputs) N(Intermediary) Offset(Intermediary) N(Output) Offset(output)
-    pub fn execute_circuit(&mut self, server_key : &ServerKey, file_path : &str, client_key_debug : &ClientKey){
+    pub fn execute_circuit(&mut self, server_key : &ServerKey, file_path : &str){
         let file = File::open(file_path).unwrap();
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
