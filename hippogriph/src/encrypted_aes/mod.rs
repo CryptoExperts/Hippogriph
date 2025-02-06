@@ -3,6 +3,7 @@ use std::time::Instant;
 use crate::clear_aes::increment_iv_u64;
 
 use clear::clear_sub_bytes;
+use key_expansion::encrypted_key_expansion;
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use tfhe::{core_crypto::prelude::DynamicDistribution, odd::prelude::*};
 
@@ -13,6 +14,7 @@ use self::{casts::{decomposer, recomposer}, linear_circuit::LinearCircuit};
 mod linear_circuit;
 mod casts;
 mod clear;
+mod key_expansion;
 
 
 #[derive(Clone)]
@@ -98,6 +100,8 @@ impl AESStateArithmetic{
 
 
 
+
+///////////////////////AES Steps//////////////::
 fn sub_bytes(state : &AESStateArithmetic, server_key:&ServerKey) -> AESStateArithmetic{
     assert_eq!(state.nibbles.len(), 32);
     AESStateArithmetic{
@@ -154,105 +158,6 @@ fn mix_columns(state : &AESStateBoolean, server_key:&ServerKey) -> AESStateBoole
 
 
 
- fn rot_words_key_expansion(bits : &mut Vec<Ciphertext>){
-    assert_eq!(bits.len(), 32);
-    bits.rotate_left(8);
-}
-
-
- fn send_bits_to_nibbles_key_expansion(bits : &Vec<Ciphertext>, server_key : &ServerKey) -> Vec<Ciphertext>{
-    assert_eq!(bits.len(), 32);
-    let encoding_arithmetic = Encoding::new_canonical(16, (0..16).collect(), 17);
-
-    (0..8)
-        .into_par_iter() //comment this line to deactivate parallelization
-        .map(|i| bits[i*4..(i+1)*4].to_vec())
-        .map(|v| recomposer(&v, &encoding_arithmetic, &server_key))
-        .collect()
-}
-
-
- fn sub_words_key_expansion(nibbles : &Vec<Ciphertext>, server_key : &ServerKey) -> Vec<Ciphertext>{
-    assert_eq!(nibbles.len(), 8);
-    (0..4)
-            .into_par_iter()  
-            .map(|i| nibbles[i*2..(i+1)*2].to_vec())
-            .map(|v| server_key.full_tree_bootstrapping(&v, 
-                                                                    &vec![Encoding::new_canonical(16, (0..16).collect(), 17);2],
-                                                                    256,
-                                                                    &clear_sub_bytes))
-            .collect::<Vec<Vec<Ciphertext>>>()
-            .concat()
-}
-
-fn send_nibbles_to_bits_key_expansion(nibbles : &Vec<Ciphertext>,  server_key : &ServerKey) -> Vec<Ciphertext>{
-    assert_eq!(nibbles.len(), 8);
-    nibbles
-            .par_iter() 
-            .map(|x| decomposer(x, &Encoding::parity_encoding(), server_key))
-            .collect::<Vec<Vec<Ciphertext>>>()
-            .concat()
-}
-
-
-
-fn add_round_constant_key_expansion(bits: &mut Vec<Ciphertext>, rcon_int : u8, server_key : &ServerKey){
-    assert_eq!(bits.len(), 32);
-    let rcon: Vec<bool> = (0..8).map(|i| (rcon_int >> (7 - i)) % 2 == 1).collect();
-    // only affects the first byte of the last row, 
-    for j in 0..8{
-        if rcon[j]{
-            bits[j] = server_key.simple_plaintext_sum(&bits[j], 1, 2);
-        }
-    }
-}
-
-
-
-pub fn encrypted_key_expansion(encrypted_key: Vec<Ciphertext>, server_key :  &ServerKey) -> Vec<Vec<Ciphertext>>{
-    // We use the same structures that for the encryption
-    assert_eq!(encrypted_key.len(), 128);
-
-    static ROUND_CONSTANTS: [u8;11] = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36];
-
-
-    let state_boolean = AESStateBoolean{bits: encrypted_key};
-    let mut state_round_keys: Vec<AESStateBoolean> = Vec::with_capacity(11);
-    
-    // The key of the first round remains unchanged
-    state_round_keys.push(state_boolean);
-
-    for i in 1..11{
-        // Extract and clone the last row
-        let mut bits_last_row = state_round_keys[i - 1].extract_last_row();
-
-        // apply the rotation
-        rot_words_key_expansion(&mut bits_last_row);
-
-        // send the bits to nibbles
-        let mut nibbles_last_row = send_bits_to_nibbles_key_expansion(&bits_last_row, &server_key);
-
-
-        // apply the subword to every word, but first we need to recompose them in nibbles
-        nibbles_last_row = sub_words_key_expansion(&nibbles_last_row, server_key);
-
-        
-        // resend everyone into the boolean world
-        bits_last_row = send_nibbles_to_bits_key_expansion(&nibbles_last_row, &server_key);
-
-        
-        // add the round counstant
-        add_round_constant_key_expansion(&mut bits_last_row, ROUND_CONSTANTS[i], &server_key);
-        
-        // compute the union of both state
-        let mut current_round_key =  state_round_keys[i-1].clone();
-        current_round_key.next_round_keys(bits_last_row, &server_key);
-        state_round_keys.push(current_round_key);
-    }
-    
-    state_round_keys.into_iter().map(|state| state.bits).collect()
-}
-
 
 
 
@@ -268,7 +173,6 @@ pub fn encrypted_aes(state: &AESStateBoolean, server_key:&ServerKey, round_keys 
 
         state_bool = state_arith.aes_decomposer(&server_key);
        
-
         state_bool = shift_rows(&state_bool);
 
         state_bool = mix_columns(&state_bool, server_key);
@@ -295,67 +199,23 @@ pub fn encrypted_aes(state: &AESStateBoolean, server_key:&ServerKey, round_keys 
 
 
 
-// pub const _PARAMETERS_40: CustomOddParameters = CustomOddParameters {
-//     lwe_dimension: LweDimension(754),
-//     glwe_dimension: GlweDimension(1),
-//     polynomial_size: PolynomialSize(1024),
-//     lwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(5.0e-6)),
-//     glwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(5.871712650082723e-15)),
-//     pbs_base_log: DecompositionBaseLog(23),
-//     pbs_level: DecompositionLevelCount(2),
-//     ks_base_log: DecompositionBaseLog(4),
-//     ks_level: DecompositionLevelCount(3),
-//     encryption_key_choice: EncryptionKeyChoice::Big,
-// };
 
-
-
-
-
-
-pub const PARAMETERS_128: CustomOddParameters = CustomOddParameters {
-    lwe_dimension: LweDimension(900),
-    glwe_dimension: GlweDimension(1),
-    polynomial_size: PolynomialSize(4096),
-    lwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(6.8e-7)),
-    glwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(2.168404344971009e-19)),
-    pbs_base_log: DecompositionBaseLog(15),
-    pbs_level: DecompositionLevelCount(2),
-    ks_base_log: DecompositionBaseLog(3),
-    ks_level: DecompositionLevelCount(6),
-    encryption_key_choice: EncryptionKeyChoice::Big,
-};
-
-
-// pub const PARAMETERS_64: CustomOddParameters = CustomOddParameters {
-//     lwe_dimension: LweDimension(850),
-//     glwe_dimension: GlweDimension(2),
-//     polynomial_size: PolynomialSize(1024),
-//     lwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(1.65e-6)),
-//     glwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(5e-32)),
-//     pbs_base_log: DecompositionBaseLog(26),
-//     pbs_level: DecompositionLevelCount(1),
-//     ks_base_log: DecompositionBaseLog(8),
-//     ks_level: DecompositionLevelCount(5),
-//     encryption_key_choice: EncryptionKeyChoice::Big,
-// };
-
-
-pub const PARAMETERS_ORPHEUS: CustomOddParameters = CustomOddParameters {
-    lwe_dimension: LweDimension(1421),
+pub const PARAMETERS_64: CustomOddParameters = CustomOddParameters {
+    lwe_dimension: LweDimension(841),
     glwe_dimension: GlweDimension(1),
     polynomial_size: PolynomialSize(2048),
-    lwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(5.820766091346741e-11)),
-    glwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(7.732042235774039e-16)),
-    pbs_base_log: DecompositionBaseLog(11),
-    pbs_level: DecompositionLevelCount(3),
-    ks_base_log: DecompositionBaseLog(8),
-    ks_level: DecompositionLevelCount(5),
+    lwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(1.9053539276264866e-06)),
+    glwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(7.960748684300802e-16)),
+    pbs_base_log: DecompositionBaseLog(13),
+    pbs_level: DecompositionLevelCount(2),
+    ks_base_log: DecompositionBaseLog(4),
+    ks_level: DecompositionLevelCount(4),
     encryption_key_choice: EncryptionKeyChoice::Big,
 };
 
+
 pub fn demo_encrypted_aes(number_of_outputs: usize, iv: &String, key: &String, ciphertexts_conventional : Vec<Vec<u8>>) {
-    let parameters = PARAMETERS_ORPHEUS;    //HERE SELECT THE PARAMETER SET
+    let parameters = PARAMETERS_64;
 
     let (client_key, server_key) = gen_keys(&parameters);
 

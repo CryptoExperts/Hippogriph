@@ -32,14 +32,5 @@ fn main() {
 
     let ciphertexts_conventional = demo_clear_aes(args.number_of_outputs, &args.iv, &args.key);
 
-//     // Print the encrypted output as a hex string
-//     println!(
-//     "Counter {}: {:02x?} -> {:02x?}",
-//     i,
-//     counter_block,
-//     block.as_slice()
-// );
-
     demo_encrypted_aes(args.number_of_outputs, &args.iv, &args.key, ciphertexts_conventional);
-
 }

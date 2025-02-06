@@ -7,6 +7,7 @@
 
 
 use itertools::Itertools;
+use rayon::join;
 
 use crate::odd::prelude::*;
 use crate::odd::client_key::ClientKey;
@@ -67,13 +68,32 @@ impl ServerKey {
         });
 
 
-        let r0 = OddEngine::with_thread_local_mut(|engine| {
-            engine.simple_tree_bootstrapping(&common_factor.clone(), inputs, &encodings_out[0], t, lut_f0, &self)
-        });
-    
-        let r1 = OddEngine::with_thread_local_mut(|engine| {
-            engine.simple_tree_bootstrapping(&common_factor.clone(), inputs, &encodings_out[1], t, lut_f1, &self)
-        });
+        let (r0, r1) = join(
+            || {
+                OddEngine::with_thread_local_mut(|engine| {
+                    engine.simple_tree_bootstrapping(
+                        &common_factor.clone(),
+                        inputs,
+                        &encodings_out[0],
+                        t,
+                        lut_f0,
+                        &self,
+                    )
+                })
+            },
+            || {
+                OddEngine::with_thread_local_mut(|engine| {
+                    engine.simple_tree_bootstrapping(
+                        &common_factor.clone(),
+                        inputs,
+                        &encodings_out[1],
+                        t,
+                        lut_f1,
+                        &self,
+                    )
+                })
+            },
+        );
     
         vec![r1, r0]
     }
