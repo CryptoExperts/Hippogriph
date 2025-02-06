@@ -341,8 +341,21 @@ pub const PARAMETERS_128: CustomOddParameters = CustomOddParameters {
 // };
 
 
+pub const PARAMETERS_ORPHEUS: CustomOddParameters = CustomOddParameters {
+    lwe_dimension: LweDimension(1421),
+    glwe_dimension: GlweDimension(1),
+    polynomial_size: PolynomialSize(2048),
+    lwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(5.820766091346741e-11)),
+    glwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(7.732042235774039e-16)),
+    pbs_base_log: DecompositionBaseLog(11),
+    pbs_level: DecompositionLevelCount(3),
+    ks_base_log: DecompositionBaseLog(8),
+    ks_level: DecompositionLevelCount(5),
+    encryption_key_choice: EncryptionKeyChoice::Big,
+};
+
 pub fn demo_encrypted_aes(number_of_outputs: usize, iv: &String, key: &String, ciphertexts_conventional : Vec<Vec<u8>>) {
-    let parameters = PARAMETERS_128;    //HERE SELECT THE PARAMETER SET
+    let parameters = PARAMETERS_ORPHEUS;    //HERE SELECT THE PARAMETER SET
 
     let (client_key, server_key) = gen_keys(&parameters);
 
