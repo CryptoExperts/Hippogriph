@@ -20,6 +20,7 @@ The folder `tfhe-rs` contains the implementation of the TFHE scheme. As Hippogry
 
 Example of usage:
 
+Compile with the `nightly-2024-11-29` toolchain, then run:
 
 ```
 ./target/release/hippogriph --number-of-outputs 100 --iv "00112233445566778899AABBCCDDEEFF" --key "000102030405060708090A0B0C0D0E0F
