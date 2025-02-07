@@ -56,23 +56,6 @@ impl AESStateBoolean{
             encoding : encoding_arithmetic
         }
     }
-
-
-
-    pub fn next_round_keys(&mut self, twisted_row : Vec<Ciphertext>, server_key : &ServerKey){
-        let mut buffer = twisted_row;
-        for i in 0..4{
-            let new_row : Vec<Ciphertext> = (0..32)
-                                            .map(|j_bit| server_key.simple_sum(&vec![self.bits[i * 32 + j_bit].clone(), buffer[j_bit].clone()]))
-                                            .collect();
-            new_row.iter().enumerate().for_each(|(j_bit, c)| self.bits[i * 32 + j_bit] = c.clone());
-            buffer = new_row;
-        }
-    }
-
-    pub fn extract_last_row(&self) -> Vec<Ciphertext>{
-        self.bits[32 * 3..].to_vec()
-    }
 }
 
 

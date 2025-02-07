@@ -25,7 +25,6 @@ struct Cli {
 fn main() {
     let args = Cli::parse();
 
-    // Print the parsed arguments (for demonstration)
     println!("Number of Outputs: {}", args.number_of_outputs);
     println!("IV: {}", args.iv);
     println!("Key:{}", args.key);
