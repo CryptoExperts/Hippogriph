@@ -232,7 +232,7 @@ pub const PARAMETERS_40: CustomOddParameters = CustomOddParameters {
     lwe_dimension: LweDimension(754),
     glwe_dimension: GlweDimension(1),
     polynomial_size: PolynomialSize(1024),
-    lwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(5.0e-6)),
+    lwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(5.0e-8)),
     glwe_noise_distribution:  DynamicDistribution::new_gaussian_from_std_dev(StandardDev(5.871712650082723e-15)),
     pbs_base_log: DecompositionBaseLog(23),
     pbs_level: DecompositionLevelCount(2),
